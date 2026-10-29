@@ -1,0 +1,94 @@
+#!/usr/bin/env perl
+# qrsmith - make QR Codes from the command line.
+use strict;
+use warnings;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+use Getopt::Long qw(GetOptions :config bundling no_ignore_case);
+use Encode qw(decode_utf8);
+use QRSmith;
+use QRSmith::Render qw(to_svg to_png to_pbm to_terminal);
+
+my %o = (ecl => 'M', strategy => 'optimal', boost => 1);
+my $usage = <<'USAGE';
+Usage: qrsmith [options] [TEXT]
+Encode TEXT (or standard input) as a QR Code.
+
+  -e, --ecl L|M|Q|H      error correction level (default M)
+  -f, --format FMT       term (default), ascii, svg, png or pbm; inferred
+                         from the --output extension when not given
+  -o, --output FILE      write to FILE instead of standard output
+  -s, --scale N          pixels per module for svg/png (default 8)
+  -q, --quiet N          quiet-zone width in modules (default 4; 2 for term)
+      --min-version N    smallest version to consider (1-40)
+      --max-version N    largest version to consider (1-40)
+  -m, --mask N           force data mask 0-7 (default: lowest penalty)
+      --strategy S       optimal (default), auto or byte segmentation
+      --no-boost         keep the requested EC level even if a higher fits
+      --eci N            prefix an ECI designator (26 = UTF-8)
+      --dark COLOUR      dark colour for svg, e.g. #1a1a2e
+      --light COLOUR     light colour for svg
+  -i, --invert           invert terminal output (for light-on-dark themes)
+      --info             print version, level, mask and segments to stderr
+  -h, --help             show this help
+USAGE
+
+GetOptions(
+    'e|ecl=s' => \$o{ecl}, 'f|format=s' => \$o{format}, 'o|output=s' => \$o{output},
+    's|scale=i' => \$o{scale}, 'q|quiet=i' => \$o{quiet},
+    'min-version=i' => \$o{min_version}, 'max-version=i' => \$o{max_version},
+    'm|mask=i' => \$o{mask}, 'strategy=s' => \$o{strategy}, 'boost!' => \$o{boost},
+    'eci=i' => \$o{eci}, 'dark=s' => \$o{dark}, 'light=s' => \$o{light},
+    'i|invert' => \$o{invert}, 'info' => \$o{info}, 'h|help' => \$o{help},
+) or die $usage;
+if ($o{help}) { print $usage; exit 0 }
+
+my $text;
+if (@ARGV) { $text = join ' ', @ARGV }
+else {
+    local $/;
+    binmode STDIN;
+    $text = <STDIN> // '';
+    $text =~ s/\r?\n\z//;    # drop the trailing newline from echo/heredocs
+}
+$text = decode_utf8($text);
+
+my $fmt = $o{format};
+if (!$fmt) {
+    ($fmt) = ($o{output} // '') =~ /\.(svg|png|pbm)\z/i;
+    $fmt = lc($fmt // 'term');
+}
+die "qrsmith: unknown format '$fmt'\n$usage" unless $fmt =~ /\A(?:term|ascii|svg|png|pbm)\z/;
+
+my $qr = eval {
+    QRSmith->encode($text, ecl => uc $o{ecl}, strategy => $o{strategy}, boost => $o{boost},
+        map { defined $o{$_} ? ($_ => $o{$_}) : () } qw(min_version max_version mask eci));
+};
+if (!$qr) { (my $e = $@) =~ s/ at \S+ line \d+.*//s; die "qrsmith: $e\n" }
+
+if ($o{info}) {
+    printf STDERR "version %d (%dx%d), level %s, mask %d, segments: %s\n",
+        $qr->version, $qr->size, $qr->size, $qr->ecl, $qr->mask,
+        join(', ', map { "$_->{mode}($_->{chars})" } @{ $qr->segments });
+}
+
+my %ro = (map { defined $o{$_} ? ($_ => $o{$_}) : () } qw(scale quiet dark light));
+my $out;
+if    ($fmt eq 'svg') { $out = to_svg($qr, %ro) }
+elsif ($fmt eq 'png') { $out = to_png($qr, %ro) }
+elsif ($fmt eq 'pbm') { $out = to_pbm($qr, %ro) }
+else {
+    $out = to_terminal($qr, %ro, style => $fmt eq 'ascii' ? 'ascii' : 'half', invert => $o{invert});
+    utf8::encode($out);
+}
+
+if (defined $o{output}) {
+    open my $fh, '>:raw', $o{output} or die "qrsmith: cannot write $o{output}: $!\n";
+    print {$fh} $out;
+    close $fh or die "qrsmith: write failed: $!\n";
+}
+else {
+    die "qrsmith: refusing to write PNG to a terminal; use -o FILE\n" if $fmt eq 'png' && -t STDOUT;
+    binmode STDOUT;
+    print $out;
+}
