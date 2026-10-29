@@ -2,18 +2,24 @@
 
 A pure-Perl QR Code encoder, built from the ground up with no CPAN dependencies.
 
-Work in progress. Implemented so far:
+```perl
+use QRSmith;
+my $qr = QRSmith->encode('HELLO WORLD', ecl => 'Q');
+print $qr->as_text;                 # '##' for dark modules, with a quiet zone
+printf "version %d-%s, mask %d\n", $qr->version, $qr->ecl, $qr->mask;
+```
 
-- `QRSmith::GF256`: arithmetic in GF(2^8) with the QR field polynomial `0x11D`.
-- `QRSmith::ReedSolomon`: systematic Reed-Solomon encoding plus a full decoder
-  (syndromes, Berlekamp-Massey, Chien search, Forney) that corrects up to
-  `n/2` byte errors, or more when erasure positions are known (`2e + f <= n`).
+Implemented so far:
+
+- `QRSmith::GF256` and `QRSmith::ReedSolomon`: GF(2^8) arithmetic and a
+  Reed-Solomon encoder plus full errors-and-erasures decoder.
 - `QRSmith::Segment`: numeric, alphanumeric, byte and ECI segments, and an
-  optimal mode-switching planner (dynamic programming over characters).
-- `QRSmith::Tables`: capacity tables for all 40 versions and 4 EC levels,
-  alignment pattern positions.
-- `QRSmith::Encoder`: version selection with free EC-level boosting,
-  terminator/padding, block split and interleaving.
+  optimal mode-switching planner.
+- `QRSmith::Tables` and `QRSmith::Encoder`: all 40 versions and 4 EC levels,
+  version selection with free EC-level boosting, padding, block interleaving.
+- `QRSmith::Matrix`: finder/timing/alignment patterns, BCH-coded format and
+  version information, zigzag data placement, the eight masks and ISO penalty
+  scoring for automatic mask choice.
 
 ```sh
 prove -l t/
