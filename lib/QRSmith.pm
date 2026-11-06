@@ -27,6 +27,13 @@ sub encode_segments {
     return $class->_build($plan, $opt{mask});
 }
 
+# Thin wrapper: encode a string built by QRSmith::Payload (or any other
+# preformatted payload). Equivalent to QRSmith->encode($payload, %opt).
+sub encode_payload {
+    my ($class, $payload, %opt) = @_;
+    return $class->encode($payload, %opt);
+}
+
 sub _build {
     my ($class, $plan, $mask) = @_;
     my ($v, $ecl) = @$plan{qw(version ecl)};
