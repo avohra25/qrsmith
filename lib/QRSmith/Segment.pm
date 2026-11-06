@@ -8,6 +8,7 @@ use Carp qw(croak);
 use QRSmith::BitBuffer;
 
 our @EXPORT_OK = qw(make_numeric make_alphanumeric make_bytes make_eci
+                    make_structured_append
                     segments_for_text total_bits is_numeric is_alphanumeric
                     char_count_bits);
 
@@ -17,10 +18,11 @@ my %ALNUM_VAL;
 
 # mode => [indicator, char-count bits for versions 1-9, 10-26, 27-40]
 my %MODE = (
-    numeric      => [ 0x1, 10, 12, 14 ],
-    alphanumeric => [ 0x2, 9,  11, 13 ],
-    byte         => [ 0x4, 8,  16, 16 ],
-    eci          => [ 0x7, 0,  0,  0 ],
+    numeric           => [ 0x1, 10, 12, 14 ],
+    alphanumeric      => [ 0x2, 9,  11, 13 ],
+    structured_append => [ 0x3, 0,  0,  0 ],  # no char-count; 16-bit header in data
+    byte              => [ 0x4, 8,  16, 16 ],
+    eci               => [ 0x7, 0,  0,  0 ],
 );
 
 sub _group { my $v = shift; $v <= 9 ? 1 : $v <= 26 ? 2 : 3 }
@@ -90,13 +92,35 @@ sub make_eci {
     return _new(eci => 0, $bb);
 }
 
+# ISO/IEC 18004 Structured Append header. Mode indicator 0011, then a
+# 4-bit 0-based symbol index, a 4-bit (total_symbols - 1) field and an
+# 8-bit parity (XOR of every raw input octet, identical in every symbol).
+# There is no character-count field; the 16 header bits live in ->data.
+sub make_structured_append {
+    my ($index, $total, $parity) = @_;
+    croak 'structured append index must be an integer 0..15'
+        unless defined $index && $index =~ /^\d+$/ && $index <= 15;
+    croak 'structured append total must be an integer 2..16'
+        unless defined $total && $total =~ /^\d+$/ && $total >= 2 && $total <= 16;
+    croak 'structured append index must be less than total'
+        unless $index < $total;
+    croak 'structured append parity must be an integer 0..255'
+        unless defined $parity && $parity =~ /^\d+$/ && $parity <= 255;
+    my $bb = QRSmith::BitBuffer->new;
+    $bb->append($index + 0, 4);
+    $bb->append($total - 1, 4);
+    $bb->append($parity + 0, 8);
+    return _new(structured_append => 0, $bb);
+}
+
 # Bits needed for these segments at a version, or undef if a count overflows.
 sub total_bits {
     my ($segs, $version) = @_;
     my $total = 0;
     for my $s (@$segs) {
         my $cc = char_count_bits($s->{mode}, $version);
-        return undef if $s->{num_chars} >= 2**$cc && $s->{mode} ne 'eci';
+        return undef if $s->{num_chars} >= 2**$cc && $s->{mode} ne 'eci'
+            && $s->{mode} ne 'structured_append';
         $total += 4 + $cc + $s->{data}->length;
     }
     return $total;
