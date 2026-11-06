@@ -7,17 +7,22 @@ use lib "$FindBin::Bin/../lib";
 use Getopt::Long qw(GetOptions :config bundling no_ignore_case);
 use Encode qw(decode_utf8);
 use QRSmith;
+use QRSmith::Payload qw(wifi vcard mailto sms geo url);
 use QRSmith::Render qw(to_svg to_png to_pbm to_terminal);
 
-my %o = (ecl => 'M', strategy => 'optimal', boost => 1);
+my %o = (ecl => 'M', strategy => 'optimal', boost => 1, security => 'WPA');
 my $usage = <<'USAGE';
 Usage: qrsmith [options] [TEXT]
-Encode TEXT (or standard input) as a QR Code.
+Encode TEXT (or standard input) as a QR Code. Payload helpers build the
+TEXT for you when a --wifi / --mailto / --sms / --geo / --vcard-* flag is
+given. Structured Append (--parts N) writes N linked symbols.
 
   -e, --ecl L|M|Q|H      error correction level (default M)
   -f, --format FMT       term (default), ascii, svg, png or pbm; inferred
                          from the --output extension when not given
   -o, --output FILE      write to FILE instead of standard output
+                         (with --parts N, siblings FILE-01.ext .. FILE-NN.ext
+                         are derived from FILE)
   -s, --scale N          pixels per module for svg/png (default 8)
   -q, --quiet N          quiet-zone width in modules (default 4; 2 for term)
       --min-version N    smallest version to consider (1-40)
@@ -30,6 +35,27 @@ Encode TEXT (or standard input) as a QR Code.
       --light COLOUR     light colour for svg
   -i, --invert           invert terminal output (for light-on-dark themes)
       --info             print version, level, mask and segments to stderr
+
+  Payload helpers (replace TEXT; mutually exclusive with each other):
+      --wifi SSID        Wi-Fi join payload (WIFI:T:...;;)
+      --password PASS    Wi-Fi password (used with --wifi)
+      --security TYPE    WPA (default), WEP or nopass
+      --hidden           mark the Wi-Fi network as hidden
+      --mailto ADDR      mailto: URI (optional --subject / --body)
+      --subject STR      mailto subject
+      --body STR         mailto or SMS body
+      --sms NUMBER       SMSTO: payload (optional --body)
+      --geo LAT,LON      geo: URI (optional --geo-query)
+      --geo-query STR    query string for --geo
+      --vcard-name NAME  minimal vCard 3.0 (optional --vcard-org/phone/email/url)
+      --vcard-org STR
+      --vcard-phone STR
+      --vcard-email STR
+      --vcard-url STR
+      --url URL          normalise / passthrough a URL payload
+
+  Structured Append:
+      --parts N          split across N symbols (2-16); alias --structured-append
   -h, --help             show this help
 USAGE
 
@@ -40,18 +66,67 @@ GetOptions(
     'm|mask=i' => \$o{mask}, 'strategy=s' => \$o{strategy}, 'boost!' => \$o{boost},
     'eci=i' => \$o{eci}, 'dark=s' => \$o{dark}, 'light=s' => \$o{light},
     'i|invert' => \$o{invert}, 'info' => \$o{info}, 'h|help' => \$o{help},
+    # payload helpers
+    'wifi=s' => \$o{wifi}, 'password=s' => \$o{password}, 'security=s' => \$o{security},
+    'hidden' => \$o{hidden},
+    'mailto=s' => \$o{mailto}, 'subject=s' => \$o{subject}, 'body=s' => \$o{body},
+    'sms=s' => \$o{sms},
+    'geo=s' => \$o{geo}, 'geo-query=s' => \$o{geo_query},
+    'vcard-name=s' => \$o{vcard_name}, 'vcard-org=s' => \$o{vcard_org},
+    'vcard-phone=s' => \$o{vcard_phone}, 'vcard-email=s' => \$o{vcard_email},
+    'vcard-url=s' => \$o{vcard_url},
+    'url=s' => \$o{url},
+    # structured append
+    'parts|structured-append=i' => \$o{parts},
 ) or die $usage;
 if ($o{help}) { print $usage; exit 0 }
 
+my @payload_flags = qw(wifi mailto sms geo vcard_name url);
+my $n_payload = grep { defined $o{$_} } @payload_flags;
+die "qrsmith: use at most one of --wifi/--mailto/--sms/--geo/--vcard-name/--url\n"
+    if $n_payload > 1;
+
 my $text;
-if (@ARGV) { $text = join ' ', @ARGV }
+if ($n_payload) {
+    die "qrsmith: TEXT is not used when a payload helper is given\n" if @ARGV;
+    if (defined $o{wifi}) {
+        $text = wifi(ssid => decode_utf8($o{wifi}),
+                     password => defined $o{password} ? decode_utf8($o{password}) : undef,
+                     security => $o{security}, hidden => $o{hidden} ? 1 : 0);
+    }
+    elsif (defined $o{mailto}) {
+        $text = mailto(email => $o{mailto},
+                       subject => defined $o{subject} ? decode_utf8($o{subject}) : undef,
+                       body => defined $o{body} ? decode_utf8($o{body}) : undef);
+    }
+    elsif (defined $o{sms}) {
+        $text = sms(number => $o{sms},
+                    body => defined $o{body} ? decode_utf8($o{body}) : undef);
+    }
+    elsif (defined $o{geo}) {
+        my ($lat, $lon) = $o{geo} =~ /\A\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*\z/
+            or die "qrsmith: --geo expects LAT,LON\n";
+        $text = geo(lat => $lat, lon => $lon,
+                    query => defined $o{geo_query} ? decode_utf8($o{geo_query}) : undef);
+    }
+    elsif (defined $o{vcard_name}) {
+        $text = vcard(name => decode_utf8($o{vcard_name}),
+                      org => defined $o{vcard_org} ? decode_utf8($o{vcard_org}) : undef,
+                      phone => $o{vcard_phone}, email => $o{vcard_email},
+                      url => $o{vcard_url});
+    }
+    else {
+        $text = url(decode_utf8($o{url}));
+    }
+}
+elsif (@ARGV) { $text = decode_utf8(join ' ', @ARGV) }
 else {
     local $/;
     binmode STDIN;
     $text = <STDIN> // '';
     $text =~ s/\r?\n\z//;    # drop the trailing newline from echo/heredocs
+    $text = decode_utf8($text);
 }
-$text = decode_utf8($text);
 
 my $fmt = $o{format};
 if (!$fmt) {
@@ -60,35 +135,84 @@ if (!$fmt) {
 }
 die "qrsmith: unknown format '$fmt'\n$usage" unless $fmt =~ /\A(?:term|ascii|svg|png|pbm)\z/;
 
-my $qr = eval {
-    QRSmith->encode($text, ecl => uc $o{ecl}, strategy => $o{strategy}, boost => $o{boost},
-        map { defined $o{$_} ? ($_ => $o{$_}) : () } qw(min_version max_version mask eci));
-};
-if (!$qr) { (my $e = $@) =~ s/ at \S+ line \d+.*//s; die "qrsmith: $e\n" }
+my %enc_opt = (
+    ecl => uc $o{ecl}, strategy => $o{strategy}, boost => $o{boost},
+    map { defined $o{$_} ? ($_ => $o{$_}) : () } qw(min_version max_version mask eci),
+);
+
+my @qrs;
+if (defined $o{parts}) {
+    die "qrsmith: --parts must be 2..16\n" unless $o{parts} >= 2 && $o{parts} <= 16;
+    my $list = eval { QRSmith->encode_structured($text, %enc_opt, parts => $o{parts}) };
+    if (!$list) { (my $e = $@) =~ s/ at \S+ line \d+.*//s; die "qrsmith: $e\n" }
+    @qrs = @$list;
+}
+else {
+    my $qr = eval { QRSmith->encode($text, %enc_opt) };
+    if (!$qr) { (my $e = $@) =~ s/ at \S+ line \d+.*//s; die "qrsmith: $e\n" }
+    @qrs = ($qr);
+}
 
 if ($o{info}) {
-    printf STDERR "version %d (%dx%d), level %s, mask %d, segments: %s\n",
-        $qr->version, $qr->size, $qr->size, $qr->ecl, $qr->mask,
-        join(', ', map { "$_->{mode}($_->{chars})" } @{ $qr->segments });
+    for my $i (0 .. $#qrs) {
+        my $qr = $qrs[$i];
+        my $prefix = @qrs > 1 ? sprintf("part %d/%d ", $i + 1, scalar @qrs) : '';
+        my $sa = '';
+        if (my $st = $qr->structured) {
+            $sa = sprintf ', SA %d/%d parity=0x%02X', $st->{index} + 1, $st->{total}, $st->{parity};
+        }
+        printf STDERR "%sversion %d (%dx%d), level %s, mask %d%s, segments: %s\n",
+            $prefix, $qr->version, $qr->size, $qr->size, $qr->ecl, $qr->mask, $sa,
+            join(', ', map { "$_->{mode}($_->{chars})" } @{ $qr->segments });
+    }
 }
 
 my %ro = (map { defined $o{$_} ? ($_ => $o{$_}) : () } qw(scale quiet dark light));
-my $out;
-if    ($fmt eq 'svg') { $out = to_svg($qr, %ro) }
-elsif ($fmt eq 'png') { $out = to_png($qr, %ro) }
-elsif ($fmt eq 'pbm') { $out = to_pbm($qr, %ro) }
-else {
-    $out = to_terminal($qr, %ro, style => $fmt eq 'ascii' ? 'ascii' : 'half', invert => $o{invert});
+
+sub _render {
+    my ($qr) = @_;
+    if    ($fmt eq 'svg') { return to_svg($qr, %ro) }
+    elsif ($fmt eq 'png') { return to_png($qr, %ro) }
+    elsif ($fmt eq 'pbm') { return to_pbm($qr, %ro) }
+    my $out = to_terminal($qr, %ro, style => $fmt eq 'ascii' ? 'ascii' : 'half', invert => $o{invert});
     utf8::encode($out);
+    return $out;
+}
+
+sub _part_path {
+    my ($base, $i, $n) = @_;
+    # out.png -> out-01.png .. out-NN.png; out -> out-01 .. out-NN
+    if ($base =~ /\A(.+)(\.[^.\/]+)\z/) {
+        return sprintf '%s-%02d%s', $1, $i, $2;
+    }
+    return sprintf '%s-%02d', $base, $i;
 }
 
 if (defined $o{output}) {
-    open my $fh, '>:raw', $o{output} or die "qrsmith: cannot write $o{output}: $!\n";
-    print {$fh} $out;
-    close $fh or die "qrsmith: write failed: $!\n";
+    if (@qrs == 1) {
+        my $out = _render($qrs[0]);
+        open my $fh, '>:raw', $o{output} or die "qrsmith: cannot write $o{output}: $!\n";
+        print {$fh} $out;
+        close $fh or die "qrsmith: write failed: $!\n";
+    }
+    else {
+        for my $i (0 .. $#qrs) {
+            my $path = _part_path($o{output}, $i + 1, scalar @qrs);
+            my $out = _render($qrs[$i]);
+            open my $fh, '>:raw', $path or die "qrsmith: cannot write $path: $!\n";
+            print {$fh} $out;
+            close $fh or die "qrsmith: write failed: $!\n";
+        }
+    }
 }
 else {
     die "qrsmith: refusing to write PNG to a terminal; use -o FILE\n" if $fmt eq 'png' && -t STDOUT;
+    die "qrsmith: --parts without -o writes nothing useful for binary formats; use -o FILE\n"
+        if @qrs > 1 && $fmt =~ /\A(?:png|pbm)\z/;
     binmode STDOUT;
-    print $out;
+    for my $i (0 .. $#qrs) {
+        print "--- part ", $i + 1, "/", scalar @qrs, " ---\n" if @qrs > 1 && $fmt =~ /\A(?:term|ascii)\z/;
+        print _render($qrs[$i]);
+        print "\n" if @qrs > 1 && $fmt eq 'svg' && $i < $#qrs;
+    }
 }

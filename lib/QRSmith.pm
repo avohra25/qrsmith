@@ -8,7 +8,7 @@ use QRSmith::Segment qw(make_structured_append make_bytes make_eci total_bits);
 use QRSmith::Tables qw(num_data_codewords);
 use QRSmith::Matrix;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.2.0';
 
 # QRSmith->encode($text, ecl => 'M', strategy => 'optimal', min_version => 1,
 #                 max_version => 40, mask => undef, boost => 1, eci => undef)
